@@ -1,3 +1,5 @@
+"""Tests for publication-date handling in split article PDFs."""
+
 import argparse
 import datetime
 import tempfile
@@ -15,7 +17,10 @@ from split_ct_articles import (
 
 
 class PublicationDateTests(unittest.TestCase):
+    """Validate publication-date parsing and PDF output metadata."""
+
     def test_date_requires_exact_iso_format_and_valid_calendar_date(self):
+        """Accept valid ISO dates and reject malformed or impossible dates."""
         self.assertEqual(
             parse_publication_date("2024-02-29"), datetime.date(2024, 2, 29)
         )
@@ -26,15 +31,17 @@ class PublicationDateTests(unittest.TestCase):
                 parse_publication_date(value)
 
     def test_cli_requires_named_publication_date(self):
-        action = next(
-            action
-            for action in build_parser()._actions
-            if "--publication-date" in action.option_strings
+        """Require the named date option and parse it as a date."""
+        parser = build_parser()
+        with self.assertRaises(SystemExit):
+            parser.parse_args([])
+        self.assertEqual(
+            parser.parse_args(["--publication-date", "2024-02-29"]).publication_date,
+            datetime.date(2024, 2, 29),
         )
-        self.assertTrue(action.required)
-        self.assertEqual(action.dest, "publication_date")
 
     def test_split_sets_pdf_creation_date_and_file_timestamp(self):
+        """Write the publication date to PDF metadata and file timestamps."""
         publication_date = datetime.date(2024, 2, 29)
         item = SplitRange("Article", "", 1, 0, 0, "test")
         with tempfile.TemporaryDirectory() as temporary_directory:

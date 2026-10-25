@@ -47,6 +47,8 @@ SKIP_NAME_RE = re.compile(r"to-proceed", re.I)
 
 @dataclass
 class TocEntry:
+    """An article entry from a table of contents."""
+
     title: str
     printed_page: int
     section: str = ""
@@ -55,6 +57,8 @@ class TocEntry:
 
 @dataclass
 class SplitRange:
+    """A range of PDF pages assigned to one article."""
+
     title: str
     section: str
     printed_start: int
@@ -64,16 +68,19 @@ class SplitRange:
 
     @property
     def page_count(self) -> int:
+        """Return the number of PDF pages in this range."""
         return self.pdf_end - self.pdf_start + 1
 
 
 def strip_tags(value: str) -> str:
+    """Remove HTML tags and normalize whitespace."""
     value = re.sub(r"<[^>]+>", " ", value)
     value = html.unescape(value)
     return re.sub(r"\s+", " ", value).strip()
 
 
 def sanitize_filename(name: str, max_len: int = 110) -> str:
+    """Return a filesystem-safe version of a title."""
     name = unicodedata.normalize("NFC", name)
     name = INVALID_FS.sub(" ", name)
     name = name.replace("…", "...")
@@ -84,6 +91,7 @@ def sanitize_filename(name: str, max_len: int = 110) -> str:
 
 
 def parse_issue_from_name(path: Path) -> tuple[int | None, int | None]:
+    """Extract the year and issue number from a PDF filename."""
     match = ISSUE_NAME_RE.search(path.name)
     if not match:
         return None, None
@@ -91,6 +99,7 @@ def parse_issue_from_name(path: Path) -> tuple[int | None, int | None]:
 
 
 def parse_issue_from_text(text: str) -> tuple[int | None, int | None]:
+    """Extract the year and issue number from PDF text."""
     match = HEFT_TEXT_RE.search(text[:8000])
     if not match:
         return None, None
@@ -98,16 +107,18 @@ def parse_issue_from_text(text: str) -> tuple[int | None, int | None]:
 
 
 def extract_page_text(reader: PdfReader, index: int) -> str:
+    """Extract text from one page, returning an empty string on read errors."""
     try:
         return reader.pages[index].extract_text() or ""
-    except Exception:
+    except Exception:  # pylint: disable=broad-exception-caught
         return ""
 
 
 def outline_entries(reader: PdfReader) -> list[TocEntry]:
+    """Convert PDF bookmarks into table-of-contents entries."""
     try:
         outline = reader.outline
-    except Exception:
+    except Exception:  # pylint: disable=broad-exception-caught
         return []
     if not outline:
         return []
@@ -124,7 +135,7 @@ def outline_entries(reader: PdfReader) -> list[TocEntry]:
             try:
                 if isinstance(item, Destination):
                     page_no = reader.get_destination_page_number(item)
-            except Exception:
+            except Exception:  # pylint: disable=broad-exception-caught
                 page_no = None
             if page_no is None or not title:
                 continue
@@ -142,6 +153,7 @@ def outline_entries(reader: PdfReader) -> list[TocEntry]:
 
 
 def fetch_heise_toc(year: int, issue: int) -> list[TocEntry]:
+    """Fetch and parse the table of contents from the Heise shop."""
     url = f"https://shop.heise.de/ct-{issue:02d}-{year}/pdf"
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(request, timeout=30) as response:
@@ -168,6 +180,7 @@ def fetch_heise_toc(year: int, issue: int) -> list[TocEntry]:
 
 
 def parse_local_toc(page_texts: list[str], toc_pages: list[int] | None) -> list[TocEntry]:
+    """Extract table-of-contents entries from local page text."""
     if toc_pages:
         indices = [p - 1 for p in toc_pages if 0 < p <= len(page_texts)]
     else:
@@ -218,7 +231,10 @@ def parse_local_toc(page_texts: list[str], toc_pages: list[int] | None) -> list[
     return entries
 
 
-def guess_printed_page(text: str, pdf_index: int, year: int | None, issue: int | None) -> int | None:
+def guess_printed_page(
+    text: str, pdf_index: int, year: int | None, issue: int | None
+) -> int | None:
+    """Guess a printed page number from extracted text."""
     expected = pdf_index + 1
     snippet = f"{text[:160]}\n{text[-350:]}"
     snippet = snippet.replace("l", "1").replace("I", "1").replace("O", "0")
@@ -243,6 +259,7 @@ def build_printed_map(
     issue: int | None,
     offset: int | None,
 ) -> list[int]:
+    """Map PDF page indexes to printed page numbers."""
     count = len(page_texts)
     mapping = [None] * count
     if offset is not None:
@@ -267,6 +284,7 @@ def build_printed_map(
 
 
 def printed_to_pdf(printed: int, printed_map: list[int]) -> int:
+    """Find the PDF index corresponding to a printed page number."""
     exact = [index for index, value in enumerate(printed_map) if value == printed]
     if exact:
         identity = printed - 1
@@ -283,6 +301,7 @@ def printed_to_pdf(printed: int, printed_map: list[int]) -> int:
 
 
 def max_pages_for(item: SplitRange) -> int | None:
+    """Return a maximum length for known short articles."""
     title = item.title.lower()
     section = (item.section or "").lower()
     one_page = (
@@ -294,11 +313,9 @@ def max_pages_for(item: SplitRange) -> int | None:
     )
     if any(key in title for key in one_page):
         return 1
-    if "leserforum" in title:
-        return 3
-    if "tipps" in title:
-        return 3
-    if "vorsicht" in title and "kunde" in title:
+    if any(key in title for key in ("leserforum", "tipps")) or (
+        "vorsicht" in title and "kunde" in title
+    ):
         return 3
     if "story" in title:
         return None
@@ -308,11 +325,13 @@ def max_pages_for(item: SplitRange) -> int | None:
 
 
 def _is_end_matter(title: str) -> bool:
+    """Return whether a title names an issue's end matter."""
     lowered = title.lower()
     return any(token in lowered for token in ("inserenten", "impressum", "vorschau"))
 
 
 def cap_and_dedupe(ranges: list[SplitRange], page_count: int) -> list[SplitRange]:
+    """Cap article lengths and remove overlapping page assignments."""
     capped: list[SplitRange] = []
     for item in ranges:
         limit = max_pages_for(item)
@@ -355,6 +374,7 @@ def ranges_from_toc(
     printed_map: list[int],
     page_count: int,
 ) -> list[SplitRange]:
+    """Build PDF page ranges from table-of-contents entries."""
     unique: list[TocEntry] = []
     by_page: dict[int, TocEntry] = {}
     for entry in sorted(entries, key=lambda e: (e.printed_page, e.title)):
@@ -388,6 +408,7 @@ def ranges_from_toc(
 
 
 def unassigned_ranges(assigned: list[SplitRange], page_count: int) -> list[SplitRange]:
+    """Return contiguous page ranges not assigned to a table-of-contents entry."""
     used = [False] * page_count
     for item in assigned:
         for i in range(item.pdf_start, item.pdf_end + 1):
@@ -414,34 +435,42 @@ def unassigned_ranges(assigned: list[SplitRange], page_count: int) -> list[Split
     return leftover
 
 
+@dataclass
+class TocOptions:
+    """Settings that control how a table of contents is selected."""
+
+    source: str
+    toc_pages: list[int] | None
+    allow_network: bool
+
+
 def choose_entries(
     reader: PdfReader,
     page_texts: list[str],
     year: int | None,
     issue: int | None,
-    source: str,
-    toc_pages: list[int] | None,
-    allow_network: bool,
+    options: TocOptions,
 ) -> list[TocEntry]:
+    """Choose table-of-contents entries from the configured source."""
     bookmarks = outline_entries(reader)
-    if source in {"auto", "bookmarks"} and len(bookmarks) >= 8:
+    if options.source in {"auto", "bookmarks"} and len(bookmarks) >= 8:
         return bookmarks
-    if source == "bookmarks":
+    if options.source == "bookmarks":
         raise RuntimeError("Keine ausreichenden PDF-Bookmarks gefunden.")
 
-    if source in {"auto", "heise"} and allow_network and year and issue:
+    if options.source in {"auto", "heise"} and options.allow_network and year and issue:
         try:
             return fetch_heise_toc(year, issue)
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError) as exc:
-            if source == "heise":
+            if options.source == "heise":
                 raise RuntimeError(f"Heise-TOC nicht ladbar: {exc}") from exc
             print(f"  Hinweis: Heise-TOC nicht nutzbar ({exc}), lokale OCR folgt.")
 
-    if source in {"auto", "local", "heise"}:
-        local = parse_local_toc(page_texts, toc_pages)
+    if options.source in {"auto", "local", "heise"}:
+        local = parse_local_toc(page_texts, options.toc_pages)
         if len(local) >= 8:
             return local
-        if source == "local":
+        if options.source == "local":
             raise RuntimeError("Lokales Inhaltsverzeichnis lieferte zu wenige Einträge.")
 
     if bookmarks:
@@ -450,6 +479,7 @@ def choose_entries(
 
 
 def write_csv(path: Path, issue_label: str, ranges: list[SplitRange]) -> None:
+    """Write the split plan as a semicolon-delimited CSV file."""
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle, delimiter=";")
         writer.writerow(
@@ -482,6 +512,7 @@ def write_csv(path: Path, issue_label: str, ranges: list[SplitRange]) -> None:
 
 
 def output_name(issue_label: str, item: SplitRange) -> str:
+    """Build the filename for one split article."""
     title = sanitize_filename(item.title)
     return f"{issue_label} - {item.printed_start:03d} - {title}.pdf"
 
@@ -492,6 +523,7 @@ def write_split(
     item: SplitRange,
     publication_date: datetime.date,
 ) -> None:
+    """Write an article PDF and apply its publication date."""
     writer = PdfWriter()
     writer.append(reader, pages=(item.pdf_start, item.pdf_end + 1))
     writer.add_metadata(
@@ -507,6 +539,7 @@ def write_split(
 
 
 def parse_publication_date(value: str) -> datetime.date:
+    """Parse and validate an ISO-formatted publication date."""
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
         raise argparse.ArgumentTypeError("Datum muss das Format YYYY-MM-DD haben.")
     try:
@@ -518,6 +551,7 @@ def parse_publication_date(value: str) -> datetime.date:
 
 
 def parse_toc_pages(spec: str | None) -> list[int] | None:
+    """Parse a comma-separated list of page numbers and ranges."""
     if not spec:
         return None
     pages: list[int] = []
@@ -534,6 +568,7 @@ def parse_toc_pages(spec: str | None) -> list[int] | None:
 
 
 def iter_pdfs(input_path: Path, include_proceed: bool) -> list[Path]:
+    """Return eligible PDFs from a file or directory."""
     if input_path.is_file():
         return [input_path]
     files = sorted(input_path.glob("*.pdf")) + sorted(input_path.glob("*.PDF"))
@@ -550,29 +585,23 @@ def iter_pdfs(input_path: Path, include_proceed: bool) -> list[Path]:
     return unique
 
 
-def process_pdf(
-    pdf_path: Path,
-    output_root: Path,
-    publication_date: datetime.date,
-    dry_run: bool,
-    apply: bool,
-    source: str,
-    toc_pages: list[int] | None,
-    offset: int | None,
-    keep_unassigned: bool,
-    allow_network: bool,
-) -> list[SplitRange]:
-    print(f"\n=== {pdf_path.name} ===")
-    reader = PdfReader(str(pdf_path))
-    page_count = len(reader.pages)
-    print(f"  PDF-Seiten: {page_count}")
+@dataclass
+class ProcessingOptions:
+    """Settings used while splitting a PDF."""
 
-    sample_n = min(page_count, 16)
-    page_texts = [extract_page_text(reader, i) for i in range(page_count)]
+    publication_date: datetime.date
+    dry_run: bool
+    apply: bool
+    toc: TocOptions
+    offset: int | None
+    keep_unassigned: bool
 
+
+def _issue_details(pdf_path: Path, page_texts: list[str]) -> tuple[int | None, int | None, str]:
+    """Find issue identifiers and format the output label."""
     year, issue = parse_issue_from_name(pdf_path)
     if not year or not issue:
-        for text in page_texts[:sample_n]:
+        for text in page_texts[:16]:
             year, issue = parse_issue_from_text(text)
             if year and issue:
                 break
@@ -582,17 +611,48 @@ def process_pdf(
     else:
         issue_label = sanitize_filename(pdf_path.stem)
         print("  Ausgabe: unbekannt (Dateiname)")
+    return year, issue, issue_label
 
-    entries = choose_entries(
-        reader, page_texts, year, issue, source, toc_pages, allow_network
+
+def _article_ranges(
+    reader: PdfReader,
+    page_texts: list[str],
+    year: int | None,
+    issue: int | None,
+    options: ProcessingOptions,
+) -> list[SplitRange]:
+    """Build and optionally complete the article page ranges."""
+    entries = choose_entries(reader, page_texts, year, issue, options.toc)
+    print(
+        f"  TOC-Quelle: {entries[0].source if entries else '-'} "
+        f"({len(entries)} Einträge)"
     )
-    print(f"  TOC-Quelle: {entries[0].source if entries else '-'} ({len(entries)} Einträge)")
-
-    printed_map = build_printed_map(page_texts, year, issue, offset)
-    ranges = cap_and_dedupe(ranges_from_toc(entries, printed_map, page_count), page_count)
-    if keep_unassigned:
-        ranges.extend(unassigned_ranges(ranges, page_count))
+    ranges = cap_and_dedupe(
+        ranges_from_toc(
+            entries,
+            build_printed_map(page_texts, year, issue, options.offset),
+            len(page_texts),
+        ),
+        len(page_texts),
+    )
+    if options.keep_unassigned:
+        ranges.extend(unassigned_ranges(ranges, len(page_texts)))
         ranges.sort(key=lambda item: item.pdf_start)
+    return ranges
+
+
+def process_pdf(
+    pdf_path: Path, output_root: Path, options: ProcessingOptions
+) -> list[SplitRange]:
+    """Create a split plan and optionally write the article PDFs."""
+    print(f"\n=== {pdf_path.name} ===")
+    reader = PdfReader(str(pdf_path))
+    page_count = len(reader.pages)
+    print(f"  PDF-Seiten: {page_count}")
+
+    page_texts = [extract_page_text(reader, i) for i in range(page_count)]
+    year, issue, issue_label = _issue_details(pdf_path, page_texts)
+    ranges = _article_ranges(reader, page_texts, year, issue, options)
 
     out_dir = output_root / issue_label
     plan_path = output_root / f"{issue_label}_split-plan.csv"
@@ -600,21 +660,22 @@ def process_pdf(
     write_csv(plan_path, issue_label, ranges)
     print(f"  Plan: {plan_path}")
     for item in ranges:
-        marker = "  "
         print(
-            f"{marker}S.{item.printed_start:3d}  PDF {item.pdf_start + 1:3d}-{item.pdf_end + 1:3d}  "
+            f"  S.{item.printed_start:3d}  "
+            f"PDF {item.pdf_start + 1:3d}-{item.pdf_end + 1:3d}  "
             f"({item.page_count:2d})  {item.title}"
         )
 
-    if apply and not dry_run:
+    if options.apply and not options.dry_run:
         for item in ranges:
             dest = out_dir / output_name(issue_label, item)
-            write_split(reader, dest, item, publication_date)
+            write_split(reader, dest, item, options.publication_date)
             print(f"  geschrieben: {dest.name}")
     return ranges
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the command-line argument parser."""
     parser = argparse.ArgumentParser(
         description="Teilt c't-Heft-PDFs anhand des Inhaltsverzeichnisses in Artikel-PDFs."
     )
@@ -680,6 +741,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run the command-line application."""
     args = build_parser().parse_args(argv)
     if not args.dry_run and not args.apply:
         args.dry_run = True
@@ -703,16 +765,20 @@ def main(argv: list[str] | None = None) -> int:
             process_pdf(
                 pdf_path=pdf,
                 output_root=output_root,
-                publication_date=args.publication_date,
-                dry_run=args.dry_run,
-                apply=args.apply,
-                source=args.source,
-                toc_pages=toc_pages,
-                offset=args.offset,
-                keep_unassigned=args.keep_unassigned,
-                allow_network=not args.no_network,
+                options=ProcessingOptions(
+                    publication_date=args.publication_date,
+                    dry_run=args.dry_run,
+                    apply=args.apply,
+                    toc=TocOptions(
+                        source=args.source,
+                        toc_pages=toc_pages,
+                        allow_network=not args.no_network,
+                    ),
+                    offset=args.offset,
+                    keep_unassigned=args.keep_unassigned,
+                ),
             )
-        except Exception as exc:
+        except Exception as exc:  # pylint: disable=broad-exception-caught
             errors += 1
             print(f"  FEHLER: {exc}", file=sys.stderr)
     if args.dry_run:
