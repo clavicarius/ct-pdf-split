@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import datetime
 import html
+import os
 import re
 import sys
 import unicodedata
@@ -484,12 +486,35 @@ def output_name(issue_label: str, item: SplitRange) -> str:
     return f"{issue_label} - {item.printed_start:03d} - {title}.pdf"
 
 
-def write_split(reader: PdfReader, destination: Path, item: SplitRange) -> None:
+def write_split(
+    reader: PdfReader,
+    destination: Path,
+    item: SplitRange,
+    publication_date: datetime.date,
+) -> None:
     writer = PdfWriter()
     writer.append(reader, pages=(item.pdf_start, item.pdf_end + 1))
+    writer.add_metadata(
+        {"/CreationDate": f"D:{publication_date:%Y%m%d}000000"}
+    )
     destination.parent.mkdir(parents=True, exist_ok=True)
     with destination.open("wb") as handle:
         writer.write(handle)
+    timestamp = datetime.datetime.combine(
+        publication_date, datetime.time.min
+    ).timestamp()
+    os.utime(destination, (destination.stat().st_atime, timestamp))
+
+
+def parse_publication_date(value: str) -> datetime.date:
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        raise argparse.ArgumentTypeError("Datum muss das Format YYYY-MM-DD haben.")
+    try:
+        return datetime.date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "Ungültiges Datum; erwartet wird YYYY-MM-DD."
+        ) from exc
 
 
 def parse_toc_pages(spec: str | None) -> list[int] | None:
@@ -528,6 +553,7 @@ def iter_pdfs(input_path: Path, include_proceed: bool) -> list[Path]:
 def process_pdf(
     pdf_path: Path,
     output_root: Path,
+    publication_date: datetime.date,
     dry_run: bool,
     apply: bool,
     source: str,
@@ -583,7 +609,7 @@ def process_pdf(
     if apply and not dry_run:
         for item in ranges:
             dest = out_dir / output_name(issue_label, item)
-            write_split(reader, dest, item)
+            write_split(reader, dest, item, publication_date)
             print(f"  geschrieben: {dest.name}")
     return ranges
 
@@ -601,6 +627,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         default="artikel",
         help="Zielordner (Standard: ./artikel)",
+    )
+    parser.add_argument(
+        "--publication-date",
+        required=True,
+        type=parse_publication_date,
+        help="Erscheinungsdatum der Zeitschrift (Format: YYYY-MM-DD)",
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
@@ -671,6 +703,7 @@ def main(argv: list[str] | None = None) -> int:
             process_pdf(
                 pdf_path=pdf,
                 output_root=output_root,
+                publication_date=args.publication_date,
                 dry_run=args.dry_run,
                 apply=args.apply,
                 source=args.source,
