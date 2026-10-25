@@ -21,27 +21,31 @@ Die Beispiele gehen vom Repository-Wurzelverzeichnis aus. `--input` zeigt auf de
 Nur Plan (CSV, keine neuen PDFs):
 
 ```text
-python split_ct_articles.py --input ./hefte --output ./artikel --dry-run
+python split_ct_articles.py --input ./hefte --output ./artikel --dry-run \
+  --publication-date 2026-10-01
 ```
 
 Artikel schneiden:
 
 ```text
-python split_ct_articles.py --input ./hefte --output ./artikel --apply
+python split_ct_articles.py --input ./hefte --output ./artikel --apply \
+  --publication-date 2026-10-01
 ```
 
 Einzelnes Heft:
 
 ```text
-python split_ct_articles.py --input ./hefte/ct2026-21--gesamtes-Heft.pdf --output ./artikel --apply
+python split_ct_articles.py --input ./hefte/ct2026-21--gesamtes-Heft.pdf --output ./artikel --apply \
+  --publication-date 2026-10-01
 ```
 
-Ohne `--input` werden PDFs im aktuellen Verzeichnis gelesen, ohne `--output` nach `./artikel` geschrieben.
+Ohne `--input` werden PDFs im aktuellen Verzeichnis gelesen, ohne `--output` nach `./artikel` geschrieben. Alle Optionen werden mit ihrem Namen angegeben; `--publication-date` muss immer gesetzt sein.
 
 ## Optionen
 
 | Option | Bedeutung |
 | --- | --- |
+| `--publication-date YYYY-MM-DD` | **Pflichtparameter**: Erscheinungsdatum; wird als Erstellungsdatum in die PDF-Metadaten und als Zeitstempel der Ausgabedateien übernommen |
 | `--source auto\|heise\|local\|bookmarks` | TOC-Quelle |
 | `--no-network` | nur lokale OCR / Bookmarks |
 | `--toc-pages 6-7` | Inhalt-Seiten erzwingen |
