@@ -141,19 +141,18 @@ class ResearchRecord:  # pylint: disable=too-many-instance-attributes
 class HttpClient:
     """HTTP-Client mit Datei-Cache, Throttling und Retries."""
 
+    timeout = 30.0
+    max_retries = 4
+
     def __init__(
         self,
         cache_dir: Path,
         delay: float,
         refresh: bool,
-        timeout: float = 30.0,
-        max_retries: int = 4,
     ) -> None:
         self.cache_dir = cache_dir
         self.delay = max(0.0, delay)
         self.refresh = refresh
-        self.timeout = timeout
-        self.max_retries = max_retries
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.session = requests.Session()
         self.session.headers.update(
