@@ -3,6 +3,7 @@
 Recherchiert offizielle Erscheinungsdaten regulärer c't-Ausgaben
 ausschließlich über Heise-/c't-Vorschauseiten unter heise.de/select/ct/.
 """
+# pylint: disable=too-many-lines
 
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Match, Optional
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -81,6 +82,8 @@ logger = logging.getLogger("ct_erscheinungsdaten")
 
 @dataclass
 class IssueRef:
+    """Referenz auf eine c't-Ausgabe inkl. URLs und Sortierschlüssel."""
+
     year: int
     path_number: int
     is_jahresrueckblick: bool = False
@@ -91,12 +94,14 @@ class IssueRef:
 
     @property
     def ausgabe_field(self) -> str:
+        """CSV-/Filterwert der Ausgabe (Nummer oder Jahresrückblick)."""
         if self.is_jahresrueckblick:
             return JAHRSRUECKBLICK
         return f"{self.path_number:02d}"
 
     @property
     def display_title(self) -> str:
+        """Anzeigetitel der Ausgabe."""
         if self.title:
             return self.title
         if self.is_jahresrueckblick:
@@ -105,7 +110,9 @@ class IssueRef:
 
 
 @dataclass
-class ResearchRecord:
+class ResearchRecord:  # pylint: disable=too-many-instance-attributes
+    """Ergebnisdatensatz einer Erscheinungsdaten-Recherche."""
+
     jahr: int
     ausgabe: str
     datum: str
@@ -120,6 +127,7 @@ class ResearchRecord:
     recherchiert_am: str = ""
 
     def csv_row(self) -> dict[str, str]:
+        """Wandelt den Datensatz in eine CSV-Zeile um."""
         return {
             "jahr": str(self.jahr),
             "ausgabe": self.ausgabe,
@@ -131,6 +139,8 @@ class ResearchRecord:
 
 
 class HttpClient:
+    """HTTP-Client mit Datei-Cache, Throttling und Retries."""
+
     def __init__(
         self,
         cache_dir: Path,
@@ -167,7 +177,12 @@ class HttpClient:
         if remaining > 0:
             time.sleep(remaining)
 
+    def close(self) -> None:
+        """Schließt die zugrunde liegende HTTP-Session."""
+        self.session.close()
+
     def fetch_html(self, url: str) -> Optional[str]:
+        """Lädt HTML von url, optional aus dem lokalen Cache."""
         cache_path = self._cache_path(url)
         if not self.refresh and cache_path.is_file():
             logger.debug("Cache-Treffer: %s", url)
@@ -228,13 +243,15 @@ class HttpClient:
 
 
 def make_soup(html: str) -> BeautifulSoup:
+    """Parst HTML bevorzugt mit lxml, sonst mit dem Standard-Parser."""
     try:
         return BeautifulSoup(html, "lxml")
-    except Exception:
+    except Exception:  # pylint: disable=broad-exception-caught
         return BeautifulSoup(html, "html.parser")
 
 
 def normalize_url(href: str, base: str = BASE_URL) -> str:
+    """Macht eine URL absolut und vereinheitlicht den Pfad."""
     absolute = urljoin(base, href.strip())
     parsed = urlparse(absolute)
     if parsed.scheme not in {"http", "https"}:
@@ -245,6 +262,7 @@ def normalize_url(href: str, base: str = BASE_URL) -> str:
 
 
 def is_official_select_ct_url(url: str) -> bool:
+    """Prüft, ob die URL zu heise.de/select/ct/ gehört."""
     parsed = urlparse(url)
     if parsed.netloc not in {"www.heise.de", "heise.de"}:
         return False
@@ -252,94 +270,110 @@ def is_official_select_ct_url(url: str) -> bool:
 
 
 def issue_content_url(year: int, path_number: int) -> str:
+    """Baut die Inhaltsseiten-URL einer Ausgabe."""
     return normalize_url(f"{BASE_URL}{year}/{path_number}")
 
 
 def archive_url(year: int) -> str:
+    """Baut die Archivseiten-URL eines Jahrgangs."""
     return normalize_url(f"{BASE_URL}archiv/{year}")
 
 
 def visible_text(soup: BeautifulSoup) -> str:
+    """Liefert den sichtbaren Fließtext ohne Script-/Style-Inhalte."""
     for tag in soup(["script", "style", "noscript"]):
         tag.decompose()
     return re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
 
 
-def parse_archive_issues(html: str, year: int) -> list[IssueRef]:
-    soup = make_soup(html)
-    found: dict[tuple[int, bool], IssueRef] = {}
+def _make_issue_ref(
+    year: int,
+    path_number: int,
+    *,
+    is_jahresrueckblick: bool,
+    title: str,
+) -> IssueRef:
+    """Erzeugt eine IssueRef mit Standard-URL und Sortierschlüssel."""
+    return IssueRef(
+        year=year,
+        path_number=path_number,
+        is_jahresrueckblick=is_jahresrueckblick,
+        title=title,
+        content_url=issue_content_url(year, path_number),
+        sort_key=(year, path_number, 1 if is_jahresrueckblick else 0),
+    )
 
-    for anchor in soup.find_all("a", href=True):
-        raw_href = anchor["href"].strip()
-        href = normalize_url(raw_href)
-        if not is_official_select_ct_url(href):
-            continue
 
-        parsed = urlparse(href)
-        # Archivlistet unter /select/ct/archiv/{jahr}/{nr}, Inhaltsseite unter /select/ct/{jahr}/{nr}
-        path_match = re.match(
+def _archive_issue_from_anchor(
+    anchor: Any,
+    year: int,
+) -> Optional[tuple[tuple[int, bool], IssueRef]]:
+    """Extrahiert ggf. eine Ausgabe aus einem Archiv-Link."""
+    href = normalize_url(anchor["href"].strip())
+    parsed = urlparse(href)
+    # Archiv: /select/ct/archiv/{jahr}/{nr}; Inhalt: /select/ct/{jahr}/{nr}
+    path_match = (
+        re.match(
             rf"^/select/ct/(?:archiv/)?{year}/(\d{{1,2}})(?:/|$)",
             parsed.path,
             re.IGNORECASE,
         )
-        if not path_match:
-            continue
-
-        path_number = int(path_match.group(1))
-        label = " ".join(anchor.get_text(" ", strip=True).split())
-        if not label:
-            continue
-        if SPECIAL_ISSUE_RE.search(label):
+        if is_official_select_ct_url(href)
+        else None
+    )
+    label = " ".join(anchor.get_text(" ", strip=True).split())
+    if path_match is None or not label or SPECIAL_ISSUE_RE.search(label):
+        if label and SPECIAL_ISSUE_RE.search(label):
             logger.debug("Spezialheft übersprungen: %s", label)
-            continue
+        return None
 
-        is_jr = bool(ARCHIVE_JR_RE.search(label)) or (
-            "jahresrückblick" in label.lower()
+    path_number = int(path_match.group(1))
+    is_jr = bool(ARCHIVE_JR_RE.search(label)) or (
+        "jahresrückblick" in label.lower()
+    )
+    if is_jr:
+        issue = _make_issue_ref(
+            year,
+            path_number,
+            is_jahresrueckblick=True,
+            title=f"c't {JAHRSRUECKBLICK} {year}",
         )
-        regular = ARCHIVE_ISSUE_RE.search(label)
+        return (path_number, True), issue
 
-        if is_jr:
-            title = f"c't {JAHRSRUECKBLICK} {year}"
-            key = (path_number, True)
-            issue = IssueRef(
-                year=year,
-                path_number=path_number,
-                is_jahresrueckblick=True,
-                title=title,
-                content_url=issue_content_url(year, path_number),
-                sort_key=(year, path_number, 1),
-            )
-            found[key] = issue
+    regular = ARCHIVE_ISSUE_RE.search(label)
+    if regular is None:
+        return None
+
+    issue_no = int(regular.group(1))
+    issue_year = int(regular.group(2))
+    if issue_year != year or issue_no != path_number:
+        logger.debug(
+            "Archiv-Link passt nicht zur Ausgabe: %s -> %s",
+            label,
+            href,
+        )
+        return None
+
+    issue = _make_issue_ref(
+        year,
+        path_number,
+        is_jahresrueckblick=False,
+        title=f"c't {issue_no}/{year}",
+    )
+    return (path_number, False), issue
+
+
+def parse_archive_issues(html: str, year: int) -> list[IssueRef]:
+    """Parst die Archivseite und liefert erkannte Ausgaben."""
+    soup = make_soup(html)
+    found: dict[tuple[int, bool], IssueRef] = {}
+
+    for anchor in soup.find_all("a", href=True):
+        parsed_issue = _archive_issue_from_anchor(anchor, year)
+        if parsed_issue is None:
             continue
-
-        if regular:
-            issue_no = int(regular.group(1))
-            issue_year = int(regular.group(2))
-            if issue_year != year:
-                logger.debug(
-                    "Archiv-Link stimmt nicht mit Jahr überein: %s -> %s",
-                    label,
-                    href,
-                )
-                continue
-            # Pfadnummer kann bei Sonderheften abweichen; bei regulären Ausgaben erwarten wir Gleichheit
-            if issue_no != path_number:
-                logger.debug(
-                    "Archiv-Pfadnummer weicht vom Label ab: %s -> %s",
-                    label,
-                    href,
-                )
-                continue
-            title = f"c't {issue_no}/{year}"
-            key = (path_number, False)
-            found[key] = IssueRef(
-                year=year,
-                path_number=path_number,
-                is_jahresrueckblick=False,
-                title=title,
-                content_url=issue_content_url(year, path_number),
-                sort_key=(year, path_number, 0),
-            )
+        key, issue = parsed_issue
+        found[key] = issue
 
     issues = sorted(found.values(), key=lambda i: i.sort_key)
     logger.info("Archiv %s: %s Ausgaben erkannt", year, len(issues))
@@ -347,6 +381,7 @@ def parse_archive_issues(html: str, year: int) -> list[IssueRef]:
 
 
 def extract_preview_link(soup: BeautifulSoup, page_url: str) -> Optional[str]:
+    """Sucht den Vorschau-Link auf einer Inhaltsseite."""
     for anchor in soup.select("a.toc__url, a[href]"):
         title_node = anchor.select_one(".toc__title")
         title = (
@@ -381,6 +416,7 @@ def parse_issue_identity(
     expected_number: int,
     expect_jahresrueckblick: bool,
 ) -> tuple[bool, str]:
+    """Prüft, ob die Seite zur erwarteten Ausgabe gehört."""
     soup = make_soup(html)
     heading = ""
     h1 = soup.find("h1")
@@ -427,6 +463,7 @@ def parse_issue_page(
     expected_number: int,
     expect_jahresrueckblick: bool = False,
 ) -> Optional[IssueRef]:
+    """Parst eine Inhaltsseite zu einer IssueRef inkl. Vorschau-URL."""
     ok, title = parse_issue_identity(
         html,
         expected_year,
@@ -470,6 +507,7 @@ def discover_issues(
     *,
     only_last: bool = False,
 ) -> list[IssueRef]:
+    """Entdeckt und validiert Ausgaben eines Jahrgangs."""
     html = client.fetch_html(archive_url(year))
     if not html:
         logger.error("Archivseite nicht erreichbar: %s", year)
@@ -526,6 +564,95 @@ def extract_preview_target(
     return number, year, is_jr
 
 
+def _preview_snippet(text: str, date_match: Optional[Match[str]]) -> str:
+    """Schneidet einen kurzen Kontextausschnitt um das Datum bzw. „Vorschau“."""
+    if date_match:
+        start = max(0, date_match.start() - 80)
+        end = min(len(text), date_match.end() + 40)
+        return text[start:end].strip()
+    match = re.search(r"Vorschau.{0,120}", text, re.IGNORECASE)
+    return match.group(0).strip() if match else text[:200]
+
+
+def _preview_belongs_to_target(
+    soup: BeautifulSoup,
+    text: str,
+    target: IssueRef,
+) -> bool:
+    """Prüft, ob der Vorschautext zur Zielausgabe gehört."""
+    target_num, target_year, target_is_jr = extract_preview_target(text)
+    belongs = False
+    if target.is_jahresrueckblick:
+        belongs = target_is_jr or (
+            target_year == target.year
+            and target_num is None
+            and "jahresrückblick" in text.lower()
+        )
+        if not belongs and target_year == target.year and target_is_jr:
+            belongs = True
+        if not belongs and re.search(
+            rf"jahresrückblick\s*{target.year}",
+            text,
+            re.IGNORECASE,
+        ):
+            belongs = True
+    elif target_num == target.path_number and (
+        target_year is None or target_year == target.year
+    ):
+        belongs = True
+
+    if belongs:
+        return True
+
+    h1 = soup.find("h1")
+    h1_text = h1.get_text(" ", strip=True) if h1 else ""
+    if target.is_jahresrueckblick:
+        return (
+            "jahresrückblick" in h1_text.lower()
+            and str(target.year) in h1_text
+        )
+    return bool(
+        re.search(
+            rf"\b{target.path_number}\s*/\s*{target.year}\b",
+            h1_text,
+        )
+    )
+
+
+def _iso_date_from_match(
+    date_match: Match[str],
+    target: IssueRef,
+) -> tuple[str, list[str]]:
+    """Leitet ein ISO-Datum aus dem Regex-Treffer ab."""
+    errors: list[str] = []
+    day = int(date_match.group(1))
+    month_key = date_match.group(2).lower()
+    month = MONTHS.get(month_key) or MONTHS.get(month_key.replace("ä", "ae"))
+    year_in_text = date_match.group(3)
+
+    if month is None:
+        return MISSING, [f"Unbekannter Monat: {date_match.group(2)}"]
+
+    if year_in_text:
+        year = int(year_in_text)
+    else:
+        # Frühe Hefte erscheinen oft noch im Dezember des Vorjahres.
+        year = target.year
+        if (
+            not target.is_jahresrueckblick
+            and month == 12
+            and target.path_number <= 2
+        ):
+            year = target.year - 1
+
+    try:
+        return date(year, month, day).isoformat(), errors
+    except ValueError:
+        return MISSING, [
+            f"Ungültiges Kalenderdatum: {year:04d}-{month:02d}-{day:02d}"
+        ]
+
+
 def parse_preview_date(
     html: str,
     target: IssueRef,
@@ -537,55 +664,10 @@ def parse_preview_date(
     errors: list[str] = []
     soup = make_soup(html)
     text = visible_text(soup)
-
-    preview_snippet = ""
     date_match = DATE_RE.search(text)
-    if date_match:
-        start = max(0, date_match.start() - 80)
-        end = min(len(text), date_match.end() + 40)
-        preview_snippet = text[start:end].strip()
-    else:
-        # Kontext um „Vorschau“
-        m = re.search(r"Vorschau.{0,120}", text, re.IGNORECASE)
-        preview_snippet = m.group(0).strip() if m else text[:200]
+    preview_snippet = _preview_snippet(text, date_match)
 
-    target_num, target_year, target_is_jr = extract_preview_target(text)
-    belongs = False
-    if target.is_jahresrueckblick:
-        belongs = target_is_jr or (
-            target_year == target.year and target_num is None and "jahresrückblick" in text.lower()
-        )
-        # Manche Vorschauen: „Vorschau Jahresrückblick 2022“
-        if not belongs and target_year == target.year and target_is_jr:
-            belongs = True
-        if not belongs and re.search(
-            rf"jahresrückblick\s*{target.year}",
-            text,
-            re.IGNORECASE,
-        ):
-            belongs = True
-    else:
-        if target_num == target.path_number and (
-            target_year is None or target_year == target.year
-        ):
-            belongs = True
-        elif target_num == target.path_number and target_year == target.year:
-            belongs = True
-
-    if not belongs:
-        # Zusätzlicher Check: Überschrift enthält Zielausgabe
-        h1 = soup.find("h1")
-        h1_text = h1.get_text(" ", strip=True) if h1 else ""
-        if target.is_jahresrueckblick:
-            belongs = "jahresrückblick" in h1_text.lower() and str(target.year) in h1_text
-        else:
-            if re.search(
-                rf"\b{target.path_number}\s*/\s*{target.year}\b",
-                h1_text,
-            ):
-                belongs = True
-
-    if not belongs:
+    if not _preview_belongs_to_target(soup, text, target):
         errors.append(
             "Vorschauseite gehört nicht eindeutig zur Zielausgabe "
             f"{target.ausgabe_field}/{target.year}"
@@ -596,40 +678,9 @@ def parse_preview_date(
         errors.append("Kein ausdrückliches Erscheinungsdatum gefunden")
         return MISSING, preview_snippet, errors
 
-    day = int(date_match.group(1))
-    month_key = date_match.group(2).lower()
-    month = MONTHS.get(month_key) or MONTHS.get(month_key.replace("ä", "ae"))
-    year_in_text = date_match.group(3)
-
-    if month is None:
-        errors.append(f"Unbekannter Monat: {date_match.group(2)}")
-        return MISSING, preview_snippet, errors
-
-    if year_in_text:
-        year = int(year_in_text)
-    else:
-        # Jahr nur aus eindeutig ermittelter Zielausgabe ableiten.
-        # Frühe Hefte eines Jahrgangs erscheinen oft noch im Dezember des Vorjahres
-        # („Ab 18. Dezember …“ bei 1/2022 → 2021-12-18,
-        #  „Ab 31. Dezember …“ bei 2/2023 → 2022-12-31).
-        # Späte Hefte mit Dezember-Datum (z. B. 26/2022) gehören zum Zieljahr.
-        year = target.year
-        if (
-            not target.is_jahresrueckblick
-            and month == 12
-            and target.path_number <= 2
-        ):
-            year = target.year - 1
-
-    try:
-        parsed = date(year, month, day)
-    except ValueError:
-        errors.append(
-            f"Ungültiges Kalenderdatum: {year:04d}-{month:02d}-{day:02d}"
-        )
-        return MISSING, preview_snippet, errors
-
-    return parsed.isoformat(), preview_snippet, errors
+    datum, date_errors = _iso_date_from_match(date_match, target)
+    errors.extend(date_errors)
+    return datum, preview_snippet, errors
 
 
 def resolve_release_date(
@@ -637,6 +688,7 @@ def resolve_release_date(
     previous: Optional[IssueRef],
     target: IssueRef,
 ) -> ResearchRecord:
+    """Ermittelt das Erscheinungsdatum einer Ausgabe über die Vorgänger-Vorschau."""
     now = datetime.now(timezone.utc).isoformat()
     record = ResearchRecord(
         jahr=target.year,
@@ -756,6 +808,7 @@ def validate_sequence(records: list[ResearchRecord]) -> None:
 
 
 def dedupe_issues(issues: list[IssueRef]) -> list[IssueRef]:
+    """Entfernt doppelte Ausgaben anhand Jahr und Ausgabe."""
     seen: set[tuple[int, str]] = set()
     result: list[IssueRef] = []
     for issue in issues:
@@ -773,6 +826,7 @@ def collect_records(
     start_year: int,
     end_year: int,
 ) -> list[ResearchRecord]:
+    """Recherchiert Erscheinungsdaten für den angegebenen Jahresbereich."""
     by_year: dict[int, list[IssueRef]] = {}
 
     # Vorjahr: nur letzte Ausgabe als Vorschauquelle für Heft 01
@@ -835,6 +889,7 @@ def collect_records(
 
 
 def write_csv(path: Path, records: list[ResearchRecord]) -> None:
+    """Schreibt die Rechercheergebnisse als Semikolon-CSV."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(
@@ -854,6 +909,7 @@ def write_csv(path: Path, records: list[ResearchRecord]) -> None:
 
 
 def write_report(path: Path, records: list[ResearchRecord]) -> None:
+    """Schreibt einen detaillierten JSON-Prüfreport."""
     path.parent.mkdir(parents=True, exist_ok=True)
     payload: list[dict[str, Any]] = []
     for record in records:
@@ -881,6 +937,7 @@ def write_report(path: Path, records: list[ResearchRecord]) -> None:
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
+    """Erzeugt den Argumentparser für die CLI."""
     parser = argparse.ArgumentParser(
         description=(
             "Recherchiert offizielle c't-Erscheinungsdaten "
@@ -931,6 +988,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def configure_logging(verbose: bool) -> None:
+    """Konfiguriert das Logging für die CLI."""
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
         level=level,
@@ -941,6 +999,7 @@ def configure_logging(verbose: bool) -> None:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    """CLI-Einstieg: recherchiert und schreibt CSV/Report."""
     parser = build_arg_parser()
     args = parser.parse_args(argv)
     configure_logging(args.verbose)
