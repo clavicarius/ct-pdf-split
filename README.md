@@ -21,11 +21,13 @@ Heft-PDFs nicht ins Repository legen. Ordner `hefte/` (Eingabe) und `artikel/` (
 
 ## Schnellstart
 
-Heft in Artikel splitten (Dry-run / Apply):
+Heft in Artikel splitten (Dry-run / Apply). `--publication-date` ist Pflicht:
 
 ```text
-python split_ct_articles.py --input ./hefte --output ./artikel --dry-run
-python split_ct_articles.py --input ./hefte --output ./artikel --apply
+python split_ct_articles.py --input ./hefte --output ./artikel --dry-run \
+  --publication-date 2026-10-01
+python split_ct_articles.py --input ./hefte --output ./artikel --apply \
+  --publication-date 2026-10-01
 ```
 
 Dokumentdaten in Paperless setzen (Dry-run / Apply):

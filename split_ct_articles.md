@@ -23,9 +23,9 @@ Heft-PDFs gehören nicht ins Repository. Typische Ordner: `hefte/` (Eingabe), `a
    - `bookmarks` / `heise` / `local`: erzwingt die jeweilige Quelle
 4. Gedruckte Heftseiten auf PDF-Seiten abbilden (automatisch oder mit `--offset`)
 5. Split-Plan als CSV schreiben
-6. Mit `--apply` Artikel-PDFs erzeugen
+6. Mit `--apply` Artikel-PDFs erzeugen und Erscheinungsdatum in Metadaten/Dateizeiten setzen
 
-Ohne `--apply` und ohne `--dry-run` gilt Dry-run (nur Plan).
+Ohne `--apply` und ohne `--dry-run` gilt Dry-run (nur Plan). `--publication-date YYYY-MM-DD` ist immer Pflicht.
 
 ## Aufruf
 
@@ -33,13 +33,16 @@ Vom Repository-Wurzelverzeichnis:
 
 ```text
 # Nur Plan (CSV)
-python split_ct_articles.py --input ./hefte --output ./artikel --dry-run
+python split_ct_articles.py --input ./hefte --output ./artikel --dry-run \
+  --publication-date 2026-10-01
 
 # Artikel schneiden
-python split_ct_articles.py --input ./hefte --output ./artikel --apply
+python split_ct_articles.py --input ./hefte --output ./artikel --apply \
+  --publication-date 2026-10-01
 
 # Einzelnes Heft
-python split_ct_articles.py --input ./hefte/ct2026-21--gesamtes-Heft.pdf --output ./artikel --apply
+python split_ct_articles.py --input ./hefte/ct2026-21--gesamtes-Heft.pdf --output ./artikel --apply \
+  --publication-date 2026-10-01
 ```
 
 Ohne `--input` werden PDFs im aktuellen Verzeichnis gelesen, ohne `--output` nach `./artikel` geschrieben.
@@ -48,6 +51,7 @@ Ohne `--input` werden PDFs im aktuellen Verzeichnis gelesen, ohne `--output` nac
 
 | Option | Bedeutung |
 | --- | --- |
+| `--publication-date YYYY-MM-DD` | **Pflicht**: Erscheinungsdatum; PDF-`/CreationDate` und Dateizeitstempel der Ausgabe |
 | `--input` | PDF-Datei oder Ordner (Standard: `.`) |
 | `--output` | Zielordner (Standard: `./artikel`) |
 | `--dry-run` | Nur Split-Plan (CSV), keine PDFs |
