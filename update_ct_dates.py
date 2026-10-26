@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""Setzt Paperless-Dokumentdaten anhand der c't-Erscheinungsdaten-CSV."""
 
 import argparse
 import csv
@@ -33,6 +34,7 @@ TITELMUSTER = r"^ct(\d{4})-(\d{1,2})(?!\d)"
 # ------------------------------------------------------------
 
 def parse_arguments():
+    """Parst und validiert die Kommandozeilenargumente."""
     parser = argparse.ArgumentParser(
         description=(
             "Setzt das Dokumentdatum von c't-Dokumenten anhand "
@@ -117,6 +119,7 @@ HEADERS = {
 
 
 def api_get(url, params=None):
+    """Führt einen GET-Request gegen die Paperless-API aus."""
     response = requests.get(
         url,
         headers=HEADERS,
@@ -128,6 +131,7 @@ def api_get(url, params=None):
 
 
 def api_patch(url, payload):
+    """Führt einen PATCH-Request gegen die Paperless-API aus."""
     response = requests.patch(
         url,
         headers=HEADERS,
@@ -262,12 +266,12 @@ def lese_csv():
 
             try:
                 date.fromisoformat(datum)
-            except ValueError:
+            except ValueError as exc:
                 raise RuntimeError(
                     f"Ungültiges Datum in CSV, Zeile "
                     f"{zeilennummer}: {datum!r}. "
                     f"Erwartet wird JJJJ-MM-TT oder FEHLT."
-                )
+                ) from exc
 
             # Doppelte Schlüssel: letzter gültiger ISO-Eintrag gewinnt
             mapping[(jahr, ausgabe)] = datum
@@ -307,10 +311,8 @@ def ermittle_ausgabe_aus_titel(titel):
 # Hauptprogramm
 # ------------------------------------------------------------
 
-def main():
-    args = parse_arguments()
-
-    # edition_filter ist entweder None oder beispielsweise "2024-03"
+def ermittle_ausgabenfilter(args, csv_mapping):
+    """Bestimmt den Ausgabenfilter und eine lesbare Beschreibung."""
     edition_filter = args.edition
 
     if edition_filter:
@@ -320,22 +322,101 @@ def main():
                 edition_filter[5:7],
             )
         }
-
-        filterbeschreibung = (
-            f"nur Ausgabe {edition_filter}"
-        )
+        filterbeschreibung = f"nur Ausgabe {edition_filter}"
     else:
         ausgabenfilter = {
-            (str(args.year), ausgabe)
-            for jahr, ausgabe in lese_csv().keys()
+            (jahr, ausgabe)
+            for jahr, ausgabe in csv_mapping
             if jahr == str(args.year)
         }
+        filterbeschreibung = f"nur Ausgaben des Jahres {args.year}"
 
-        filterbeschreibung = (
-            f"nur Ausgaben des Jahres {args.year}"
+    return ausgabenfilter, filterbeschreibung
+
+
+def _aktualisiere_dokumentdatum(dokument_id, neues_datum):
+    """Schreibt das neue Datum via API; True bei Erfolg."""
+    try:
+        url = f"{PAPERLESS_URL}/api/documents/{dokument_id}/"
+        api_patch(url, {"created": neues_datum})
+        return True
+    except requests.RequestException as exc:
+        print(
+            f"  FEHLER bei Dokument {dokument_id}: {exc}",
+            file=sys.stderr,
         )
+        return False
 
+
+def verarbeite_dokument(
+    dokument,
+    ausgabenfilter,
+    csv_mapping,
+    apply_changes,
+):
+    """
+    Verarbeitet ein Dokument.
+
+    Rückgabe: Statuscode
+    (ohne_praefix | ausserhalb_filter | ohne_csv |
+     unveraendert | geaendert | geplant | fehler)
+    """
+    dokument_id = dokument["id"]
+    titel = dokument.get("title") or ""
+    altes_datum = dokument.get("created")
+    ausgabe = ermittle_ausgabe_aus_titel(titel)
+    status = "ohne_praefix"
+
+    if ausgabe is None:
+        status = "ohne_praefix"
+    elif ausgabe not in ausgabenfilter:
+        status = "ausserhalb_filter"
+    else:
+        neues_datum = csv_mapping.get(ausgabe)
+        if neues_datum is None:
+            print(f"KEIN CSV-EINTRAG: ID {dokument_id}: {titel}")
+            status = "ohne_csv"
+        elif altes_datum == neues_datum:
+            print(
+                f"UNVERÄNDERT: ID {dokument_id}: {titel}"
+                f" ({altes_datum})"
+            )
+            status = "unveraendert"
+        else:
+            aktion = "ÄNDERE" if apply_changes else "WÜRDE ÄNDERN"
+            print(f"{aktion}: ID {dokument_id}: {titel}")
+            print(f"  Datum: {altes_datum} → {neues_datum}")
+            if not apply_changes:
+                status = "geplant"
+            elif _aktualisiere_dokumentdatum(dokument_id, neues_datum):
+                status = "geaendert"
+            else:
+                status = "fehler"
+
+    return status
+
+
+def drucke_zusammenfassung(zaehler):
+    """Gibt die Laufstatistik aus."""
+    print()
+    print("Zusammenfassung:")
+    print(f"  Geplant:                  {zaehler['geplant']}")
+    print(f"  Tatsächlich geändert:     {zaehler['geaendert']}")
+    print(f"  Bereits korrekt:          {zaehler['unveraendert']}")
+    print(f"  Ohne passendes Präfix:    {zaehler['ohne_praefix']}")
+    print(f"  Außerhalb des Filters:    {zaehler['ausserhalb_filter']}")
+    print(f"  Ohne CSV-Eintrag:         {zaehler['ohne_csv']}")
+    print(f"  Fehler:                   {zaehler['fehler']}")
+
+
+def main():
+    """Aktualisiert Paperless-Dokumentdaten gemäß CSV und Filtern."""
+    args = parse_arguments()
     csv_mapping = lese_csv()
+    ausgabenfilter, filterbeschreibung = ermittle_ausgabenfilter(
+        args,
+        csv_mapping,
+    )
 
     # Nur die für den Lauf relevanten CSV-Einträge behalten
     csv_mapping = {
@@ -351,7 +432,6 @@ def main():
 
     correspondent = finde_korrespondent(KORRESPONDENT_NAME)
     correspondent_id = correspondent["id"]
-
     dokumente = lese_alle_dokumente(correspondent_id)
 
     print(f"Korrespondent: {correspondent['name']}")
@@ -361,95 +441,26 @@ def main():
     print(f"Gefundene Dokumente des Korrespondenten: {len(dokumente)}")
     print()
 
-    geplant = 0
-    geaendert = 0
-    unveraendert = 0
-    ohne_praefix = 0
-    ausserhalb_filter = 0
-    ohne_csv_eintrag = 0
-    fehler = 0
+    zaehler = {
+        "geplant": 0,
+        "geaendert": 0,
+        "unveraendert": 0,
+        "ohne_praefix": 0,
+        "ausserhalb_filter": 0,
+        "ohne_csv": 0,
+        "fehler": 0,
+    }
 
     for dokument in dokumente:
-        dokument_id = dokument["id"]
-        titel = dokument.get("title") or ""
-        altes_datum = dokument.get("created")
-
-        ausgabe = ermittle_ausgabe_aus_titel(titel)
-
-        if ausgabe is None:
-            ohne_praefix += 1
-            continue
-
-        if ausgabe not in ausgabenfilter:
-            ausserhalb_filter += 1
-            continue
-
-        neues_datum = csv_mapping.get(ausgabe)
-
-        if neues_datum is None:
-            print(
-                f"KEIN CSV-EINTRAG: "
-                f"ID {dokument_id}: {titel}"
-            )
-            ohne_csv_eintrag += 1
-            continue
-
-        if altes_datum == neues_datum:
-            print(
-                f"UNVERÄNDERT: "
-                f"ID {dokument_id}: {titel}"
-                f" ({altes_datum})"
-            )
-            unveraendert += 1
-            continue
-
-        if args.apply:
-            aktion = "ÄNDERE"
-        else:
-            aktion = "WÜRDE ÄNDERN"
-
-        print(
-            f"{aktion}: "
-            f"ID {dokument_id}: {titel}"
+        status = verarbeite_dokument(
+            dokument,
+            ausgabenfilter,
+            csv_mapping,
+            args.apply,
         )
-        print(
-            f"  Datum: {altes_datum} → {neues_datum}"
-        )
+        zaehler[status] += 1
 
-        if args.apply:
-            try:
-                url = (
-                    f"{PAPERLESS_URL}/api/documents/"
-                    f"{dokument_id}/"
-                )
-
-                api_patch(
-                    url,
-                    {
-                        "created": neues_datum,
-                    },
-                )
-
-                geaendert += 1
-
-            except requests.RequestException as exc:
-                print(
-                    f"  FEHLER bei Dokument {dokument_id}: {exc}",
-                    file=sys.stderr,
-                )
-                fehler += 1
-        else:
-            geplant += 1
-
-    print()
-    print("Zusammenfassung:")
-    print(f"  Geplant:                  {geplant}")
-    print(f"  Tatsächlich geändert:     {geaendert}")
-    print(f"  Bereits korrekt:          {unveraendert}")
-    print(f"  Ohne passendes Präfix:    {ohne_praefix}")
-    print(f"  Außerhalb des Filters:    {ausserhalb_filter}")
-    print(f"  Ohne CSV-Eintrag:         {ohne_csv_eintrag}")
-    print(f"  Fehler:                   {fehler}")
+    drucke_zusammenfassung(zaehler)
 
 
 if __name__ == "__main__":
@@ -458,6 +469,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\nAbgebrochen.")
         sys.exit(1)
-    except Exception as exc:
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         print(f"FEHLER: {exc}", file=sys.stderr)
         sys.exit(1)
