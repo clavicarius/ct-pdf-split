@@ -174,7 +174,7 @@ def lese_alle_dokumente(korrespondent_id):
     """
     url = f"{PAPERLESS_URL}/api/documents/"
     params = {
-        "correspondent": correspondent_id,
+        "correspondent": korrespondent_id,
         "page_size": 100,
     }
 
@@ -197,16 +197,19 @@ def lese_alle_dokumente(korrespondent_id):
 
 def lese_csv():
     """
-    Erwartete CSV-Struktur:
+    Erwartete CSV-Struktur (UTF-8 ohne BOM, Semikolon):
 
-    jahr,ausgabe,datum
-    2024,01,2024-01-05
-    2024,02,2024-01-19
+    jahr;ausgabe;datum;titel;zeitschrift;quelle
+    2024;01;2024-01-05;c't 1/2024;c't;https://...
+    2024;02;FEHLT;c't 2/2024;c't;https://...
+
+    Zeilen mit datum=FEHLT oder nicht-numerischer ausgabe
+    (z. B. Jahresrückblick) werden übersprungen.
+    Bei doppelten Schlüsseln gilt der letzte gültige ISO-Eintrag.
 
     Ergebnis:
     {
         ("2024", "01"): "2024-01-05",
-        ("2024", "02"): "2024-01-19",
     }
     """
     mapping = {}
@@ -216,7 +219,7 @@ def lese_csv():
         newline="",
         encoding="utf-8",
     ) as datei:
-        reader = csv.DictReader(datei)
+        reader = csv.DictReader(datei, delimiter=";")
 
         erwartete_spalten = {
             "jahr",
@@ -238,7 +241,7 @@ def lese_csv():
             start=2,
         ):
             jahr = zeile["jahr"].strip()
-            ausgabe = zeile["ausgabe"].strip().zfill(2)
+            ausgabe_roh = zeile["ausgabe"].strip()
             datum = zeile["datum"].strip()
 
             if not re.fullmatch(r"\d{4}", jahr):
@@ -247,11 +250,15 @@ def lese_csv():
                     f"{zeilennummer}: {jahr!r}"
                 )
 
-            if not re.fullmatch(r"\d{2}", ausgabe):
-                raise RuntimeError(
-                    f"Ungültige Ausgabe in CSV, Zeile "
-                    f"{zeilennummer}: {ausgabe!r}"
-                )
+            # Nicht-numerische Ausgaben (z. B. Jahresrückblick) ignorieren
+            if not re.fullmatch(r"\d{1,2}", ausgabe_roh):
+                continue
+
+            ausgabe = ausgabe_roh.zfill(2)
+
+            # Fehlende Erscheinungsdaten überspringen
+            if datum == "FEHLT":
+                continue
 
             try:
                 date.fromisoformat(datum)
@@ -259,18 +266,11 @@ def lese_csv():
                 raise RuntimeError(
                     f"Ungültiges Datum in CSV, Zeile "
                     f"{zeilennummer}: {datum!r}. "
-                    f"Erwartet wird JJJJ-MM-TT."
+                    f"Erwartet wird JJJJ-MM-TT oder FEHLT."
                 )
 
-            schluessel = (jahr, ausgabe)
-
-            if schluessel in mapping:
-                raise RuntimeError(
-                    f"Doppelter CSV-Eintrag für "
-                    f"{jahr}-{ausgabe}."
-                )
-
-            mapping[schluessel] = datum
+            # Doppelte Schlüssel: letzter gültiger ISO-Eintrag gewinnt
+            mapping[(jahr, ausgabe)] = datum
 
     return mapping
 

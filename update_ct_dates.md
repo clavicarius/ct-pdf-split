@@ -22,27 +22,38 @@ Umgebungsvariablen (pflicht):
 
 Abhängigkeit: `requests`.
 
-CSV-Datei im Arbeitsverzeichnis: `ct-zeitschriften-daten.csv`
+CSV-Datei im Arbeitsverzeichnis: `ct-zeitschriften-daten.csv`  
+(erzeugt von [`ct_erscheinungsdaten.py`](./ct_erscheinungsdaten.md))
 
 Korrespondent in Paperless (exakter Name laut Skriptkonfiguration): `ct`
 
 ## CSV-Format
 
+Gleiche Struktur wie die Ausgabe von `ct_erscheinungsdaten.py`:
+
+- Encoding: UTF-8 **ohne BOM**
+- Trennzeichen: Semikolon
+- Pflichtspalten für dieses Skript: `jahr`, `ausgabe`, `datum`  
+  (weitere Spalten wie `titel`, `zeitschrift`, `quelle` werden ignoriert)
+
 ```csv
-jahr,ausgabe,datum
-2024,01,2024-01-05
-2024,02,2024-01-19
-2025,01,2025-01-03
+jahr;ausgabe;datum;titel;zeitschrift;quelle
+2024;01;2024-01-05;c't 1/2024;c't;https://www.heise.de/select/ct/...
+2024;02;FEHLT;c't 2/2024;c't;https://www.heise.de/select/ct/...
+2022;Jahresrückblick;FEHLT;c't Jahresrückblick 2022;c't;https://...
 ```
 
-- Spalten: `jahr`, `ausgabe`, `datum`
-- Datum: `YYYY-MM-DD`
+Auswertung:
+
+- `datum` muss `YYYY-MM-DD` oder `FEHLT` sein; Zeilen mit `FEHLT` werden übersprungen
+- nicht-numerische `ausgabe` (z. B. `Jahresrückblick`) wird übersprungen — Titelmatching bleibt `ctYYYY-NN`
 - Ausgabenummer wird mit führender Null normalisiert (`1` und `01` sind gleich)
+- doppelte Schlüssel `(jahr, ausgabe)`: der letzte gültige ISO-Eintrag gilt
 
 ## Ablauf
 
 1. Filter bestimmen: `-edition YYYY-NN` oder alle Ausgaben des Jahres (`-year`, Standard: aktuelles Jahr)
-2. Passende CSV-Einträge laden
+2. Passende CSV-Einträge laden (nur Zeilen mit gültigem ISO-Datum)
 3. Korrespondent `ct` über die Paperless-API finden
 4. Alle Dokumente dieses Korrespondenten laden (inkl. Pagination)
 5. Titel mit Präfix `ctYYYY-NN` auswerten
